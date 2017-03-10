@@ -12,14 +12,10 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
-	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
-	"strings"
 
 	"playground/log"
 )

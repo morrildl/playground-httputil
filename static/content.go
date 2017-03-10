@@ -21,8 +21,8 @@ import (
 	"strconv"
 	"strings"
 
-	"playground/log"
 	"playground/httputil"
+	"playground/log"
 )
 
 // OAuthHandler is a generic function for inspecting a request and completing the final OAuth2
