@@ -169,3 +169,18 @@ func PopulateFromBody(dest interface{}, req *http.Request) error {
 	}
 	return nil
 }
+
+func CheckAPISecret(secret string, req *http.Request) bool {
+	log.Debug("httputil.CheckAPISecret", req.Header)
+
+	provided, ok := req.Header["X-Playground-Api-Secret"]
+	if !ok {
+		return false
+	}
+
+	if len(provided) != 1 {
+		return false
+	}
+
+	return provided[0] == secret
+}
