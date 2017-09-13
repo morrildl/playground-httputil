@@ -30,9 +30,8 @@ func Send(writer http.ResponseWriter, status int, contentType string, data []byt
 	writer.Write(data)
 }
 
-// SendJSON marshals the provided struct to a JSON string and then writes it to the client using the
-// HTTP response/status code provided.
-func SendJSON(writer http.ResponseWriter, status int, object interface{}) {
+// sendJSON is the internal implementation called by SendJSON and SendFormattedJSON.
+func sendJSON(writer http.ResponseWriter, status int, object interface{}, format bool) {
 	writer.Header().Add("Content-Type", "application/json")
 
 	s, err := json.Marshal(object)
@@ -44,9 +43,27 @@ func SendJSON(writer http.ResponseWriter, status int, object interface{}) {
 		return
 	}
 
+	if format {
+		out := bytes.Buffer{}
+		json.Indent(&out, s, "", "  ")
+		s = out.Bytes()
+	}
+
 	writer.Header().Add("Content-Length", strconv.Itoa(len(s)))
 	writer.WriteHeader(status)
 	writer.Write(s)
+}
+
+// SendJSON marshals the provided struct to a JSON string and then writes it to the client using the
+// HTTP response/status code provided.
+func SendJSON(writer http.ResponseWriter, status int, object interface{}) {
+	sendJSON(writer, status, object, false)
+}
+
+// SendFormattedJSON is identical to SendJSON except that it sends indented JSON as output, intended
+// for human consumption.
+func SendFormattedJSON(writer http.ResponseWriter, status int, object interface{}) {
+	sendJSON(writer, status, object, true)
 }
 
 // SendPlaintext writes a raw string to the client as text/plain, handling the Content-Length header.
