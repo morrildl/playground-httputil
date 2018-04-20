@@ -15,7 +15,7 @@ type ConfigType struct {
 var Config = ConfigType{
 	ClientCertFile:           "./client.crt",
 	ClientKeyFile:            "./client.key",
-	SelfSignedServerCertFile: "server.crt",
+	SelfSignedServerCertFile: "./server.crt",
 	APISecretHeader:          "X-Playground-Api-Secret",
 	APISecretValue:           "",
 }
