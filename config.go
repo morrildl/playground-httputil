@@ -2,18 +2,20 @@
 
 package httputil
 
+// ConfigType for use by the caller to populate this package's configuration
 type ConfigType struct {
-	MgmtURLBase              string
-	MgmtSecret               string
 	ClientCertFile           string
 	ClientKeyFile            string
 	SelfSignedServerCertFile string
+	APISecretHeader          string
+	APISecretValue           string
 }
 
+// Config instance of ConfigType for use by the caller to populate this package's configuration
 var Config = ConfigType{
-	MgmtURLBase:              "https://localhost:9000",
-	MgmtSecret:               "",
 	ClientCertFile:           "./client.crt",
 	ClientKeyFile:            "./client.key",
 	SelfSignedServerCertFile: "server.crt",
+	APISecretHeader:          "X-Playground-Api-Secret",
+	APISecretValue:           "",
 }

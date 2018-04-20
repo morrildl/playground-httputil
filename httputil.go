@@ -14,8 +14,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
+	"strings"
 
 	"playground/log"
 )
@@ -74,23 +74,26 @@ func SendPlaintext(writer http.ResponseWriter, status int, body string) {
 	io.WriteString(writer, body)
 }
 
-// URLFor safely constructs a path from the provided components. "Safely" means that it properly
-// handles duplicate / characters, etc. That is, URLFor("/foo/", "bar") is equivalent to
-// URLFor("/foo/", "/bar"), etc.
-func URLFor(elements ...string) string {
-	u, err := url.Parse(Config.MgmtURLBase)
+// URLJoin safely constructs a URL from the provided components. "Safely" means that it properly
+// handles duplicate / characters, etc. That is, URLJoin("/foo/", "bar") is equivalent to
+// URLJoin("/foo/", "/bar"), etc.
+func URLJoin(base string, elements ...string) (string, error) {
+	u, err := url.Parse(base)
 	if err != nil {
-		log.Error("certs.urlFor", "Config.MgmtURLBase is malformed: '"+Config.MgmtURLBase+"'", err)
-		// this implies a config error and is accordingly unrecoverable, so panic
-		panic("Config.URLBase is malformed: '" + Config.MgmtURLBase + "'")
+		log.Error("httputil.URLJoin", "base URL is malformed: '"+base+"'", err)
+		return "", err
 	}
-	u.Path = path.Join(append([]string{u.Path}, elements...)...)
-	return u.String()
+	scrubbed := append(make([]string, len(elements)+1), strings.TrimRight(u.Path, "/"))
+	for _, s := range elements {
+		scrubbed = append(scrubbed, strings.Trim(s, "/"))
+	}
+	u.Path = strings.Join(scrubbed, "/")
+	return u.String(), nil
 }
 
-var client *http.Client = nil
+var client *http.Client
 
-// Generally we only want to transmit requests to the Mgmt server instance we trust, which we want
+// Generally we only want to transmit requests to the API server instance we trust, which we want
 // to authenticate by its server certificate. So this function creates an HTTPS client instance
 // configured such that its root CA list contains only our trusted server cert. It follows, then,
 // that that server cert must be self-signed.
@@ -122,10 +125,10 @@ func initHTTPSClient() {
 	}
 }
 
-// CallAPI is a convenience wrapper specifically around Mgmt API calls. It handles setting the
-// shared-secret header for authentication to Mgmt, automatically constructs a final URL using the
-// server/scheme specified in the server's config file, etc. Returns the HTTP status code, or the
-// underlying error if not nil.
+// CallAPI is a convenience wrapper specifically around API calls. It handles setting the
+// shared-secret header for authentication to the remote server, automatically constructs a final
+// URL using the server/scheme specified in the server's config file, etc. Returns the HTTP status
+// code, or the underlying error if not nil.
 func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}) (int, error) {
 	if client == nil {
 		initHTTPSClient()
@@ -133,13 +136,13 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 
 	body, err := json.Marshal(sendObj)
 	if err != nil {
-		log.Error("http.CallAPI", "trivial Request failed to marshal", err)
+		log.Error("httputil.CallAPI", "trivial Request failed to marshal", err)
 		return -1, err
 	}
 
 	req, err := http.NewRequest(method, api, bytes.NewReader(body))
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("X-Mgmt-Api-Secret", Config.MgmtSecret)
+	req.Header.Add(Config.APISecretHeader, Config.APISecretValue)
 	if err != nil {
 		return -1, err
 	}
@@ -151,12 +154,12 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 	if recvObj != nil {
 		body, err = ioutil.ReadAll(res.Body)
 		if err != nil {
-			log.Error("http.CallAPI", "low-level I/O error reading HTTP response body", err)
+			log.Error("httputil.CallAPI", "low-level I/O error reading HTTP response body", err)
 			return -1, err
 		}
 		err = json.Unmarshal(body, recvObj)
 		if err != nil {
-			log.Error("http.CallAPI", "parse error unmarshaling HTTP response JSON", err)
+			log.Error("httputil.CallAPI", "parse error unmarshaling HTTP response JSON", err)
 			return -1, err
 		}
 	}
@@ -173,31 +176,84 @@ func PopulateFromBody(dest interface{}, req *http.Request) error {
 	}
 
 	body, err := ioutil.ReadAll(req.Body)
-	log.Debug("http.PopulateFromBody", "raw JSON string follows")
-	log.Debug("http.PopulateFromBody", string(body))
+	log.Debug("httputil.PopulateFromBody", "raw JSON string follows")
+	log.Debug("httputil.PopulateFromBody", string(body))
 	if err != nil {
-		log.Warn("http.PopulateFromBody", "I/O error parsing JSON from client", err)
+		log.Warn("httputil.PopulateFromBody", "I/O error parsing JSON from client", err)
 		return err
 	}
 	err = json.Unmarshal(body, dest)
 	if err != nil {
-		log.Warn("http.PopulateFromBody", "error parsing JSON from client", err)
+		log.Warn("httputil.PopulateFromBody", "error parsing JSON from client", err)
 		return err
 	}
 	return nil
 }
 
-func CheckAPISecret(secret string, req *http.Request) bool {
+// CheckAPISecret indicates whether the indicated request contains an API secret header matching the
+// value required via Config.APISecretValue (and specified via config.json). Note that this is a
+// very simple test, and presumes that TLS is in use (to prevent sniffing of the secret and forged
+// requests) and that certificate pinning is in use.
+//
+// If Config.APISecretValue (or header) is not set, always returns true.
+func CheckAPISecret(req *http.Request) bool {
 	log.Debug("httputil.CheckAPISecret", req.Header)
 
-	provided, ok := req.Header["X-Playground-Api-Secret"]
+	if Config.APISecretHeader == "" || Config.APISecretValue == "" {
+		log.Debug("httputil.CheckAPISecret", "defaulting to true via missing APISecretValue")
+		return true
+	}
+
+	provided, ok := req.Header[Config.APISecretHeader]
 	if !ok {
+		log.Warn("httputil.CheckAPISecret", "missing API secret", req.URL.Path)
 		return false
 	}
 
 	if len(provided) != 1 {
+		log.Warn("httputil.CheckAPISecret", "multivalued API secret", req.URL.Path)
 		return false
 	}
 
-	return provided[0] == secret
+	if provided[0] == Config.APISecretValue {
+		return true
+	}
+	log.Warn("httputil.APIWrap", "bad API secret")
+	return false
+}
+
+// APIWrap wraps an http.HandleFunc with some boilerplate checks frequently needed by handlers for
+// API endpoints. Specifically, it checks incoming requests' methods against an allowed list, so
+// that handlers don't have to repeat the same code. If Config.APISecretValue is set (i.e. via
+// config.json), the wrapper optionally enforces the API secret.
+func APIWrap(methods []string, cb func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(writer http.ResponseWriter, req *http.Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Warn("httputil.APIWrap", "panic in handler", r)
+				SendJSON(writer, http.StatusInternalServerError, struct{}{})
+			}
+		}()
+
+		if !CheckAPISecret(req) {
+			log.Warn("httputil.APIWrap", "API secret check failed", req.URL.Path, req.Method)
+			SendJSON(writer, http.StatusForbidden, struct{}{})
+			return
+		}
+
+		allowed := false
+		for _, method := range methods {
+			if method == req.Method {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			log.Warn("httputil.APIWrap", "disallowed HTTP method", req.URL.Path, req.Method)
+			SendJSON(writer, http.StatusMethodNotAllowed, struct{}{})
+			return
+		}
+
+		cb(writer, req)
+	}
 }
