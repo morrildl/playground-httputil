@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -83,9 +84,16 @@ func URLJoin(base string, elements ...string) (string, error) {
 		log.Error("httputil.URLJoin", "base URL is malformed: '"+base+"'", err)
 		return "", err
 	}
-	scrubbed := append(make([]string, len(elements)+1), strings.TrimRight(u.Path, "/"))
+	scrubbed := []string{}
+	u.Path = strings.TrimRight(u.Path, "/")
+	if u.Path != "" {
+		scrubbed = append(scrubbed, u.Path)
+	}
 	for _, s := range elements {
-		scrubbed = append(scrubbed, strings.Trim(s, "/"))
+		s = strings.Trim(s, "/")
+		if s != "" {
+			scrubbed = append(scrubbed, s)
+		}
 	}
 	u.Path = strings.Join(scrubbed, "/")
 	return u.String(), nil
@@ -151,6 +159,8 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 		return -1, err
 	}
 
+	log.Debug("httputil.CallAPI", fmt.Sprintf("%s %s", method, api), body)
+
 	if recvObj != nil {
 		body, err = ioutil.ReadAll(res.Body)
 		if err != nil {
@@ -200,7 +210,6 @@ func CheckAPISecret(req *http.Request) bool {
 	log.Debug("httputil.CheckAPISecret", req.Header)
 
 	if Config.APISecretHeader == "" || Config.APISecretValue == "" {
-		log.Debug("httputil.CheckAPISecret", "defaulting to true via missing APISecretValue")
 		return true
 	}
 
@@ -254,6 +263,7 @@ func APIWrap(methods []string, cb func(http.ResponseWriter, *http.Request)) func
 			return
 		}
 
+		log.Status("httputil.APIWrap", fmt.Sprintf("%s %s", req.Method, req.URL.Path))
 		cb(writer, req)
 	}
 }
