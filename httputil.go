@@ -159,7 +159,7 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 		return -1, err
 	}
 
-	log.Debug("httputil.CallAPI", fmt.Sprintf("%s %s", method, api), body)
+	log.Debug("httputil.CallAPI", fmt.Sprintf("%s %s", method, api), string(body))
 
 	if recvObj != nil {
 		body, err = ioutil.ReadAll(res.Body)
@@ -167,10 +167,16 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 			log.Error("httputil.CallAPI", "low-level I/O error reading HTTP response body", err)
 			return -1, err
 		}
-		err = json.Unmarshal(body, recvObj)
-		if err != nil {
-			log.Error("httputil.CallAPI", "parse error unmarshaling HTTP response JSON", err)
-			return -1, err
+		b, ok := recvObj.(*[]byte)
+		if ok {
+			*b = make([]byte, len(body))
+			copy(*b, body)
+		} else {
+			err = json.Unmarshal(body, recvObj)
+			if err != nil {
+				log.Error("httputil.CallAPI", "parse error unmarshaling HTTP response JSON", err)
+				return -1, err
+			}
 		}
 	}
 
@@ -239,7 +245,7 @@ func APIWrap(methods []string, cb func(http.ResponseWriter, *http.Request)) func
 	return func(writer http.ResponseWriter, req *http.Request) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Warn("httputil.APIWrap", "panic in handler", r)
+				log.Warn("httputil.APIWrap", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
 				SendJSON(writer, http.StatusInternalServerError, struct{}{})
 			}
 		}()
