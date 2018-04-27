@@ -78,11 +78,11 @@ func SendPlaintext(writer http.ResponseWriter, status int, body string) {
 // URLJoin safely constructs a URL from the provided components. "Safely" means that it properly
 // handles duplicate / characters, etc. That is, URLJoin("/foo/", "bar") is equivalent to
 // URLJoin("/foo/", "/bar"), etc.
-func URLJoin(base string, elements ...string) (string, error) {
+func URLJoin(base string, elements ...string) string {
 	u, err := url.Parse(base)
 	if err != nil {
-		log.Error("httputil.URLJoin", "base URL is malformed: '"+base+"'", err)
-		return "", err
+		log.Error("httputil.URLJoin", fmt.Sprintf("base URL '%s' does not parse", base), err)
+		panic(err)
 	}
 	scrubbed := []string{}
 	u.Path = strings.TrimRight(u.Path, "/")
@@ -96,7 +96,7 @@ func URLJoin(base string, elements ...string) (string, error) {
 		}
 	}
 	u.Path = strings.Join(scrubbed, "/")
-	return u.String(), nil
+	return u.String()
 }
 
 var client *http.Client
@@ -233,25 +233,26 @@ func CheckAPISecret(req *http.Request) bool {
 	if provided[0] == Config.APISecretValue {
 		return true
 	}
-	log.Warn("httputil.APIWrap", "bad API secret")
+	log.Warn("httputil.CheckAPISecret", "bad API secret")
 	return false
 }
 
-// APIWrap wraps an http.HandleFunc with some boilerplate checks frequently needed by handlers for
-// API endpoints. Specifically, it checks incoming requests' methods against an allowed list, so
-// that handlers don't have to repeat the same code. If Config.APISecretValue is set (i.e. via
-// config.json), the wrapper optionally enforces the API secret.
-func APIWrap(methods []string, cb func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
-	return func(writer http.ResponseWriter, req *http.Request) {
+// HandleFunc is a version of http.HandleFunc that wraps an http.HandlerFunc with some boilerplate
+// checks frequently needed by handlers for API endpoints. Specifically, it checks incoming
+// requests' methods against an allowed list, so that handlers don't have to repeat the same code.
+// If Config.APISecretValue is set (i.e. via config.json), the wrapper optionally enforces the API
+// secret.
+func HandleFunc(path string, methods []string, handler http.HandlerFunc) {
+	http.HandleFunc(path, func(writer http.ResponseWriter, req *http.Request) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Warn("httputil.APIWrap", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
+				log.Warn(path, fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
 				SendJSON(writer, http.StatusInternalServerError, struct{}{})
 			}
 		}()
 
 		if !CheckAPISecret(req) {
-			log.Warn("httputil.APIWrap", "API secret check failed", req.URL.Path, req.Method)
+			log.Warn(path, "API secret check failed", req.URL.Path, req.Method)
 			SendJSON(writer, http.StatusForbidden, struct{}{})
 			return
 		}
@@ -264,12 +265,12 @@ func APIWrap(methods []string, cb func(http.ResponseWriter, *http.Request)) func
 			}
 		}
 		if !allowed {
-			log.Warn("httputil.APIWrap", "disallowed HTTP method", req.URL.Path, req.Method)
+			log.Warn(path, "disallowed HTTP method", req.URL.Path, req.Method)
 			SendJSON(writer, http.StatusMethodNotAllowed, struct{}{})
 			return
 		}
 
-		log.Status("httputil.APIWrap", fmt.Sprintf("%s %s", req.Method, req.URL.Path))
-		cb(writer, req)
-	}
+		log.Status(path, fmt.Sprintf("%s %s", req.Method, req.URL.Path))
+		handler(writer, req)
+	})
 }
