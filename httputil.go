@@ -380,8 +380,11 @@ func (w *wrapper) prep(f func(http.HandlerFunc) http.HandlerFunc) *wrapper {
 // Wrap constructs a final http.HandlerFunc out of the chain of authenticator blocks represented by
 // w.
 func (w *wrapper) Wrap(f http.HandlerFunc) http.HandlerFunc {
-	if w.prev == nil {
+	if w.prev == nil { // first in the chain, no predecessor
 		return w.cur(f)
+	}
+	if w.cur == nil { // last in the chain, no cur set
+		return w.prev.Wrap(f)
 	}
 	return w.prev.Wrap(w.cur(f))
 }
