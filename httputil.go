@@ -245,7 +245,7 @@ func CheckAPISecret(req *http.Request) bool {
 // If Config.APISecretValue is set (i.e. via config.json), the wrapper optionally enforces the API
 // secret.
 func HandleFunc(path string, methods []string, handler http.HandlerFunc) {
-	handler = Wrapper().WithPanicHandler().WithSecretSentry().WithMethodSentry(methods).Wrap(handler)
+	handler = Wrapper().WithPanicHandler().WithSecretSentry().WithMethodSentry(methods...).Wrap(handler)
 	http.HandleFunc(path, handler)
 }
 
@@ -393,7 +393,7 @@ func (w *wrapper) Wrap(f http.HandlerFunc) http.HandlerFunc {
 // current request method against the provided list of messages, and aborts the request with an
 // error if the method is not approved. This is intended to ensure that REST endpoint handlers don't
 // have to deal with methods they aren't expecting.
-func (w *wrapper) WithMethodSentry(methods []string) *wrapper {
+func (w *wrapper) WithMethodSentry(methods ...string) *wrapper {
 	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
 		return func(writer http.ResponseWriter, req *http.Request) {
 			allowed := false
