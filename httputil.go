@@ -27,6 +27,9 @@ import (
 // the Content-Length header.
 func Send(writer http.ResponseWriter, status int, contentType string, data []byte) {
 	log.Debug("sendBytes", "Content-Type: '"+contentType+"'")
+	if Config.EnableHSTS {
+		writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 	writer.Header().Add("Content-Type", contentType)
 	writer.Header().Add("Content-Length", strconv.Itoa(len(data)))
 	writer.WriteHeader(status)
@@ -35,6 +38,9 @@ func Send(writer http.ResponseWriter, status int, contentType string, data []byt
 
 // sendJSON is the internal implementation called by SendJSON and SendFormattedJSON.
 func sendJSON(writer http.ResponseWriter, status int, object interface{}, format bool) {
+	if Config.EnableHSTS {
+		writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 	writer.Header().Add("Content-Type", "application/json")
 
 	s, err := json.Marshal(object)
@@ -71,10 +77,21 @@ func SendFormattedJSON(writer http.ResponseWriter, status int, object interface{
 
 // SendPlaintext writes a raw string to the client as text/plain, handling the Content-Length header.
 func SendPlaintext(writer http.ResponseWriter, status int, body string) {
+	if Config.EnableHSTS {
+		writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 	writer.Header().Add("Content-Type", "text/plain")
 	writer.Header().Add("Content-Length", strconv.Itoa(len(body)))
 	writer.WriteHeader(status)
 	io.WriteString(writer, body)
+}
+
+func ExtractSegment(path string, n int) string {
+	chunks := strings.Split(path, "/")
+	if len(chunks) > n {
+		return chunks[n]
+	}
+	return ""
 }
 
 // URLJoin safely constructs a URL from the provided components. "Safely" means that it properly
@@ -135,11 +152,17 @@ func initHTTPSClient() {
 	}
 }
 
+type API struct {
+	Header  string
+	Value   string
+	URLBase string
+}
+
 // CallAPI is a convenience wrapper specifically around API calls. It handles setting the
 // shared-secret header for authentication to the remote server, automatically constructs a final
 // URL using the server/scheme specified in the server's config file, etc. Returns the HTTP status
 // code, or the underlying error if not nil.
-func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}) (int, error) {
+func (api *API) Call(endpoint string, method string, sendObj interface{}, recvObj interface{}) (int, error) {
 	if client == nil {
 		initHTTPSClient()
 	}
@@ -150,9 +173,9 @@ func CallAPI(api string, method string, sendObj interface{}, recvObj interface{}
 		return -1, err
 	}
 
-	req, err := http.NewRequest(method, api, bytes.NewReader(body))
+	req, err := http.NewRequest(method, URLJoin(api.URLBase, endpoint), bytes.NewReader(body))
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add(Config.APISecretHeader, Config.APISecretValue)
+	req.Header.Add(api.Header, api.Value)
 	if err != nil {
 		return -1, err
 	}
@@ -214,14 +237,14 @@ func PopulateFromBody(dest interface{}, req *http.Request) error {
 // requests) and that certificate pinning is in use.
 //
 // If Config.APISecretValue (or header) is not set, always returns true.
-func CheckAPISecret(req *http.Request) bool {
+func CheckAPISecret(req *http.Request, header string, value string) bool {
 	log.Debug("httputil.CheckAPISecret", req.Header)
 
-	if Config.APISecretHeader == "" || Config.APISecretValue == "" {
+	if header == "" || value == "" {
 		return true
 	}
 
-	provided, ok := req.Header[Config.APISecretHeader]
+	provided, ok := req.Header[header]
 	if !ok {
 		log.Warn("httputil.CheckAPISecret", "missing API secret", req.URL.Path)
 		return false
@@ -232,21 +255,11 @@ func CheckAPISecret(req *http.Request) bool {
 		return false
 	}
 
-	if provided[0] == Config.APISecretValue {
+	if provided[0] == value {
 		return true
 	}
 	log.Warn("httputil.CheckAPISecret", "bad API secret")
 	return false
-}
-
-// HandleFunc is a version of http.HandleFunc that wraps an http.HandlerFunc with some boilerplate
-// checks frequently needed by handlers for API endpoints. Specifically, it checks incoming
-// requests' methods against an allowed list, so that handlers don't have to repeat the same code.
-// If Config.APISecretValue is set (i.e. via config.json), the wrapper optionally enforces the API
-// secret.
-func HandleFunc(path string, methods []string, handler http.HandlerFunc) {
-	handler = Wrapper().WithPanicHandler().WithSecretSentry().WithMethodSentry(methods...).Wrap(handler)
-	http.HandleFunc(path, handler)
 }
 
 // NewHardenedTLSConfig returns a *tls.Config that enables only modern, PFS-permitting ciphers.
@@ -300,10 +313,9 @@ func NewHardenedServer(bindInterface string, port int) (*HardenedServer, *http.S
 	}, mux
 }
 
-// ListenAndServeHSTS starts up an unencrypted HTTP server whose only function is to redirect all
-// URLs to the HTTPS server. The HTTP Strict Transport Security header is set in these redirects to
-// ensure compatible browsers default to the HTTPS instance for future requests.
-func (s *HardenedServer) ListenAndServeHSTS(httpsHost string, httpPort int) {
+// ListenAndServeTLSRedirector starts up an unencrypted HTTP server whose only function is to redirect all
+// URLs to the HTTPS server.
+func (s *HardenedServer) ListenAndServeTLSRedirector(httpsHost string, httpPort int) {
 	if httpPort < 1 {
 		panic(fmt.Sprintf("invalid HSTS port %d specified", httpPort))
 	}
@@ -321,7 +333,6 @@ func (s *HardenedServer) ListenAndServeHSTS(httpsHost string, httpPort int) {
 			IdleTimeout:  120 * time.Second,
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Connection", "close")
-				w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 				url := fmt.Sprintf("https://%s/%s", httpsHost, req.URL.String())
 				log.Debug("main (http)", "redirect to https", url)
 				http.Redirect(w, req, url, http.StatusMovedPermanently)
@@ -433,10 +444,13 @@ func (w *wrapper) WithPanicHandler() *wrapper {
 // WithSecretSentry adds a check for an API secret in the request header. The header key and value
 // must match those specified in the module's Config struct. If the header is missing or invalid,
 // a 403 response is returned to the client.
-func (w *wrapper) WithSecretSentry() *wrapper {
+func (w *wrapper) WithSecretSentry(header, value string) *wrapper {
+	if header == "" || value == "" {
+		log.Error("WithSecretSentry", "missing header or value; check will be a no-op")
+	}
 	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
 		return func(writer http.ResponseWriter, req *http.Request) {
-			if !CheckAPISecret(req) {
+			if !CheckAPISecret(req, header, value) {
 				log.Warn("secretSentry", "API secret check failed", req.URL.Path, req.Method)
 				SendJSON(writer, http.StatusForbidden, struct{}{})
 				return

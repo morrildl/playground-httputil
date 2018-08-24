@@ -7,8 +7,7 @@ type ConfigType struct {
 	ClientCertFile           string
 	ClientKeyFile            string
 	SelfSignedServerCertFile string
-	APISecretHeader          string
-	APISecretValue           string
+	EnableHSTS               bool
 }
 
 // Config instance of ConfigType for use by the caller to populate this package's configuration
@@ -16,6 +15,5 @@ var Config = ConfigType{
 	ClientCertFile:           "./client.crt",
 	ClientKeyFile:            "./client.key",
 	SelfSignedServerCertFile: "./server.crt",
-	APISecretHeader:          "X-Playground-Api-Secret",
-	APISecretValue:           "",
+	EnableHSTS:               true,
 }
