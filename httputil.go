@@ -26,7 +26,7 @@ import (
 // Send writes the indicated data to the client as the indicated content-type, handling
 // the Content-Length header.
 func Send(writer http.ResponseWriter, status int, contentType string, data []byte) {
-	log.Debug("sendBytes", "Content-Type: '"+contentType+"'")
+	log.Debug("httputil.Send", "Content-Type: '"+contentType+"'")
 	if Config.EnableHSTS {
 		writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
@@ -45,7 +45,7 @@ func sendJSON(writer http.ResponseWriter, status int, object interface{}, format
 
 	s, err := json.Marshal(object)
 	if err != nil {
-		log.Warn("main", "error marshaling object to JSON", err)
+		log.Warn("httputil.SendJSON", "error marshaling object to JSON", err)
 		writer.Header().Add("Content-Length", strconv.Itoa(2))
 		writer.WriteHeader(http.StatusInternalServerError)
 		writer.Write([]byte("{}"))
@@ -118,19 +118,46 @@ func URLJoin(base string, elements ...string) string {
 	return u.String()
 }
 
-var client *http.Client
+// API represents a client to an API server. It simply encapsulates common initialization and usage
+// code to minimize boilerplate in code that must call into an API server.
+//
+// api := &httputil.API{ /* server URL base values here */ }
+// req := &uploadType{}
+// res := &responseType{}
+// code, err := api.Call(httputil.URLJoin("/api/endpoint", entityID), "GET", req, res)
+// if err != nil { /* handle network or I/O error */ }
+// switch code {
+// case http.StatusOK:
+//   /* ... */
+// case http.StatusNotFound:
+//   /* ... */
+// default:
+//   /* ... */
+// }
+//
+// The request and response pointers are optional and will be ignored if nil.
+type API struct {
+	Header         string
+	Value          string
+	URLBase        string
+	ClientCertFile string
+	ClientKeyFile  string
+	ServerCertFile string
+
+	client *http.Client
+}
 
 // Generally we only want to transmit requests to the API server instance we trust, which we want
 // to authenticate by its server certificate. So this function creates an HTTPS client instance
 // configured such that its root CA list contains only our trusted server cert. It follows, then,
 // that that server cert must be self-signed.
-func initHTTPSClient() {
-	cert, err := tls.LoadX509KeyPair(Config.ClientCertFile, Config.ClientKeyFile)
+func (api *API) initHTTPSClient() {
+	cert, err := tls.LoadX509KeyPair(api.ClientCertFile, api.ClientKeyFile)
 	if err != nil {
 		panic(err)
 	}
 
-	serverCert, err := ioutil.ReadFile(Config.SelfSignedServerCertFile)
+	serverCert, err := ioutil.ReadFile(api.ServerCertFile)
 	if err != nil {
 		panic(err)
 	}
@@ -142,7 +169,7 @@ func initHTTPSClient() {
 		RootCAs:      serverRoot,
 	}
 	tlsConfig.BuildNameToCertificate()
-	client = &http.Client{
+	api.client = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert},
@@ -152,24 +179,20 @@ func initHTTPSClient() {
 	}
 }
 
-type API struct {
-	Header  string
-	Value   string
-	URLBase string
-}
-
 // CallAPI is a convenience wrapper specifically around API calls. It handles setting the
 // shared-secret header for authentication to the remote server, automatically constructs a final
 // URL using the server/scheme specified in the server's config file, etc. Returns the HTTP status
 // code, or the underlying error if not nil.
 func (api *API) Call(endpoint string, method string, sendObj interface{}, recvObj interface{}) (int, error) {
-	if client == nil {
-		initHTTPSClient()
+	TAG := "API.Call"
+
+	if api.client == nil {
+		api.initHTTPSClient()
 	}
 
 	body, err := json.Marshal(sendObj)
 	if err != nil {
-		log.Error("httputil.CallAPI", "trivial Request failed to marshal", err)
+		log.Error(TAG, "trivial Request failed to marshal", err)
 		return -1, err
 	}
 
@@ -179,17 +202,17 @@ func (api *API) Call(endpoint string, method string, sendObj interface{}, recvOb
 	if err != nil {
 		return -1, err
 	}
-	res, err := client.Do(req)
+	res, err := api.client.Do(req)
 	if err != nil {
 		return -1, err
 	}
 
-	log.Debug("httputil.CallAPI", fmt.Sprintf("%s %s", method, api), string(body))
+	log.Debug(TAG, fmt.Sprintf("%s %s", method, req.URL.Path), string(body))
 
 	if recvObj != nil {
 		body, err = ioutil.ReadAll(res.Body)
 		if err != nil {
-			log.Error("httputil.CallAPI", "low-level I/O error reading HTTP response body", err)
+			log.Error(TAG, "low-level I/O error reading HTTP response body", err)
 			return -1, err
 		}
 		b, ok := recvObj.(*[]byte)
@@ -199,7 +222,7 @@ func (api *API) Call(endpoint string, method string, sendObj interface{}, recvOb
 		} else {
 			err = json.Unmarshal(body, recvObj)
 			if err != nil {
-				log.Error("httputil.CallAPI", "parse error unmarshaling HTTP response JSON", err)
+				log.Error(TAG, "parse error unmarshaling HTTP response JSON", err)
 				return -1, err
 			}
 		}
@@ -212,20 +235,22 @@ func (api *API) Call(endpoint string, method string, sendObj interface{}, recvOb
 // provided struct. Uses the usual Go JSON library and so the struct must follow the usual
 // constraints. This simply handles the boilerplate of reading the string and handling errors.
 func PopulateFromBody(dest interface{}, req *http.Request) error {
+	TAG := "httputil.PopulateFromBody"
+
 	if req.Body == nil {
 		return errors.New("request with no body")
 	}
 
 	body, err := ioutil.ReadAll(req.Body)
-	log.Debug("httputil.PopulateFromBody", "raw JSON string follows")
-	log.Debug("httputil.PopulateFromBody", string(body))
+	log.Debug(TAG, "raw JSON string follows")
+	log.Debug(TAG, string(body))
 	if err != nil {
-		log.Warn("httputil.PopulateFromBody", "I/O error parsing JSON from client", err)
+		log.Warn(TAG, "I/O error parsing JSON from client", err)
 		return err
 	}
 	err = json.Unmarshal(body, dest)
 	if err != nil {
-		log.Warn("httputil.PopulateFromBody", "error parsing JSON from client", err)
+		log.Warn(TAG, "error parsing JSON from client", err)
 		return err
 	}
 	return nil
@@ -238,27 +263,24 @@ func PopulateFromBody(dest interface{}, req *http.Request) error {
 //
 // If Config.APISecretValue (or header) is not set, always returns true.
 func CheckAPISecret(req *http.Request, header string, value string) bool {
-	log.Debug("httputil.CheckAPISecret", req.Header)
+	TAG := "httputil.CheckAPISecret"
+	log.Debug(TAG, req.Header)
 
 	if header == "" || value == "" {
 		return true
 	}
 
-	provided, ok := req.Header[header]
-	if !ok {
-		log.Warn("httputil.CheckAPISecret", "missing API secret", req.URL.Path)
+	provided := req.Header.Get(header)
+	if provided == "" {
+		log.Warn(TAG, "missing API secret", req.URL.Path)
 		return false
 	}
 
-	if len(provided) != 1 {
-		log.Warn("httputil.CheckAPISecret", "multivalued API secret", req.URL.Path)
-		return false
-	}
-
-	if provided[0] == value {
+	if provided == value {
 		return true
 	}
-	log.Warn("httputil.CheckAPISecret", "bad API secret")
+
+	log.Warn(TAG, "bad API secret")
 	return false
 }
 
@@ -326,7 +348,7 @@ func (s *HardenedServer) ListenAndServeTLSRedirector(httpsHost string, httpPort 
 		httpsHost = fmt.Sprintf("%s:%d", httpsHost, s.port)
 	}
 	go func() {
-		log.Warn("main (http)", "fallback HTTP server shutting down", (&http.Server{
+		log.Warn("HardenedServer.ListenAndServeTLSRedirector", "fallback HTTP server shutting down", (&http.Server{
 			Addr:         fmt.Sprintf("%s:%d", s.bindInterface, httpPort),
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
@@ -334,7 +356,7 @@ func (s *HardenedServer) ListenAndServeTLSRedirector(httpsHost string, httpPort 
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Connection", "close")
 				url := fmt.Sprintf("https://%s/%s", httpsHost, req.URL.String())
-				log.Debug("main (http)", "redirect to https", url)
+				log.Debug("HardenedServer.ListenAndServeTLSRedirector", "redirect to https", url)
 				http.Redirect(w, req, url, http.StatusMovedPermanently)
 			}),
 		}).ListenAndServe())
@@ -359,6 +381,110 @@ func (s *HardenedServer) RequireClientRoot(rootCertFile string) {
 	s.TLSConfig.BuildNameToCertificate()
 }
 
+// An Assertable coordinates with the WithPanicHandler() wrapper to permit callers to avoid certain
+// multi-line boilerplate idioms that frequently appear in server code. Simply put, this:
+//
+//     if req.Method != "PUT" {
+//       log.Warn("someTag", "invalid method")
+//       SendJSON(writer, http.StatusMethodNotAllowed, &someStruct{})
+//       return
+//     }
+//
+// ...can become this:
+//
+//     badMethod := NewJSONAssertable(writer, "someTag", http.StatusMethodNotAllowed, &someStruct{})
+//     badMethod.Assert(req.Method != "PUT", "invalid method from '%s'", currentUser)
+//     ...
+//     badMethod.Assert(req.Method == "GET" && someParam == "", "missing URL someParam in GET from '%s'", currentUser)
+//
+// The Assert() call will panic() if the condition check fails, but will be caught by the
+// WithPanicHandler() wrapper. In this way, boilerplate lines can be reduced for readability.
+type Assertable struct {
+	Writer       http.ResponseWriter
+	Tag          string
+	ResponseCode int
+	ContentType  string
+	Payload      interface{}
+
+	isJSON bool
+	data   []byte
+	msg    string
+}
+
+func NewJSONAssertable(writer http.ResponseWriter, tag string, responseCode int, payload interface{}) *Assertable {
+	return &Assertable{writer, tag, responseCode, "application/json", payload, true, nil, ""}
+}
+
+func NewAssertable(writer http.ResponseWriter, tag string, responseCode int, contentType string, payload []byte) *Assertable {
+	return &Assertable{writer, tag, responseCode, contentType, nil, false, payload, ""}
+}
+
+func (a *Assertable) Error() string {
+	return a.msg
+}
+
+func (a *Assertable) Assert(assertion bool, params ...interface{}) {
+	if assertion {
+		return
+	}
+
+	if len(params) < 1 {
+		if a.isJSON {
+			SendJSON(a.Writer, a.ResponseCode, a.Payload)
+		} else {
+			Send(a.Writer, a.ResponseCode, a.ContentType, a.data)
+		}
+		a.msg = "unspecified assertion error"
+		log.Warn(fmt.Sprintf("httputil.Assert['%s']", a.Tag), a.msg)
+		panic(a)
+	}
+
+	for i, o := range params {
+		if o == nil {
+			continue
+		}
+		if err, ok := o.(error); ok {
+			params[i] = err.Error()
+		}
+	}
+
+	var obj interface{}
+	for len(params) > 0 {
+		if msg, ok := params[0].(string); ok {
+			a.msg = fmt.Sprintf(msg, params[1:]...)
+			params = nil
+			break
+		}
+		if obj != nil {
+			break
+		}
+		obj = params[0]
+		params = params[1:]
+	}
+
+	if a.msg == "" {
+		a.msg = "unspecified assertion error"
+	}
+
+	if a.isJSON {
+		payload := a.Payload
+		if obj != nil {
+			payload = obj
+		}
+		SendJSON(a.Writer, a.ResponseCode, payload)
+		log.Warn(fmt.Sprintf("httputil.Assert['%s']", a.Tag), a.msg)
+		panic(a)
+	}
+
+	b, ok := obj.([]byte)
+	if !ok {
+		b = a.data
+	}
+
+	Send(a.Writer, a.ResponseCode, a.ContentType, b)
+	panic(a)
+}
+
 type wrapper struct {
 	cur  func(http.HandlerFunc) http.HandlerFunc
 	prev *wrapper
@@ -379,7 +505,13 @@ type wrapper struct {
 //     .WithMethodSentry([]string{"GET", "PUT"})
 //     .Wrap(somePathHandler))
 func Wrapper() *wrapper {
-	return &wrapper{}
+	return (&wrapper{}).withLogger(false)
+}
+
+// LoggingWrapper works exactly like Wrapper except that it logs all requests at Status log level.
+// That is, if you want every request logged even when not running in Debug mode, use this.
+func LoggingWrapper() *wrapper {
+	return (&wrapper{}).withLogger(true)
 }
 
 func (w *wrapper) prep(f func(http.HandlerFunc) http.HandlerFunc) *wrapper {
@@ -415,7 +547,7 @@ func (w *wrapper) WithMethodSentry(methods ...string) *wrapper {
 				}
 			}
 			if !allowed {
-				log.Warn("methodSentry", "disallowed HTTP method", req.URL.Path, req.Method)
+				log.Warn("Wrapper.WithMethodSentry", "disallowed HTTP method", req.URL.Path, req.Method)
 				SendJSON(writer, http.StatusMethodNotAllowed, struct{}{})
 				return
 			}
@@ -432,8 +564,10 @@ func (w *wrapper) WithPanicHandler() *wrapper {
 		return func(writer http.ResponseWriter, req *http.Request) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Warn("panicHandler", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
-					SendJSON(writer, http.StatusInternalServerError, struct{}{})
+					log.Warn("Wrapper.PanicHandler", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
+					if _, ok := r.(*Assertable); !ok { // an Assertable will have already committed the response
+						SendJSON(writer, http.StatusInternalServerError, struct{}{})
+					}
 				}
 			}()
 			f(writer, req)
@@ -445,13 +579,14 @@ func (w *wrapper) WithPanicHandler() *wrapper {
 // must match those specified in the module's Config struct. If the header is missing or invalid,
 // a 403 response is returned to the client.
 func (w *wrapper) WithSecretSentry(header, value string) *wrapper {
+	TAG := "Wrapper.WithSecretSentry"
 	if header == "" || value == "" {
-		log.Error("WithSecretSentry", "missing header or value; check will be a no-op")
+		log.Error(TAG, "missing header or value; check will be a no-op")
 	}
 	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
 		return func(writer http.ResponseWriter, req *http.Request) {
 			if !CheckAPISecret(req, header, value) {
-				log.Warn("secretSentry", "API secret check failed", req.URL.Path, req.Method)
+				log.Warn(TAG, "API secret check failed", req.URL.Path, req.Method)
 				SendJSON(writer, http.StatusForbidden, struct{}{})
 				return
 			}
@@ -473,6 +608,19 @@ func (w *wrapper) WithSessionSentry(body interface{}) *wrapper {
 				} else {
 					SendPlaintext(writer, http.StatusForbidden, "Unauthenticated")
 				}
+			}
+			f(writer, req)
+		}
+	})
+}
+
+func (w *wrapper) withLogger(always bool) *wrapper {
+	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
+		return func(writer http.ResponseWriter, req *http.Request) {
+			if always {
+				log.Status("httputil.Wrapper", fmt.Sprintf("%s %s", req.Method, req.URL.Path))
+			} else {
+				log.Debug("httputil.Wrapper", fmt.Sprintf("%s %s", req.Method, req.URL.Path))
 			}
 			f(writer, req)
 		}
