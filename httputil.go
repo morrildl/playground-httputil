@@ -86,6 +86,8 @@ func SendPlaintext(writer http.ResponseWriter, status int, body string) {
 	io.WriteString(writer, body)
 }
 
+// ExtractSegment returns the nth element in the path, as delimited by "/", or "" if it isn't set
+// (or if the path doesn't have >= n segments.)
 func ExtractSegment(path string, n int) string {
 	chunks := strings.Split(path, "/")
 	if len(chunks) > n {
@@ -179,7 +181,7 @@ func (api *API) initHTTPSClient() {
 	}
 }
 
-// CallAPI is a convenience wrapper specifically around API calls. It handles setting the
+// Call is a convenience wrapper specifically around API calls. It handles setting the
 // shared-secret header for authentication to the remote server, automatically constructs a final
 // URL using the server/scheme specified in the server's config file, etc. Returns the HTTP status
 // code, or the underlying error if not nil.
@@ -411,10 +413,14 @@ type Assertable struct {
 	msg    string
 }
 
+// NewJSONAssertable constructs an Assertable whose responses to the client have Content-Type:
+// application/json with a body of the indicated payload.
 func NewJSONAssertable(writer http.ResponseWriter, tag string, responseCode int, payload interface{}) *Assertable {
 	return &Assertable{writer, tag, responseCode, "application/json", payload, true, nil, ""}
 }
 
+// NewAssertable constructs an Assertable which will, when Assert() is called with a failing test,
+// respond to the client with the indicated Content-Type and payload.
 func NewAssertable(writer http.ResponseWriter, tag string, responseCode int, contentType string, payload []byte) *Assertable {
 	return &Assertable{writer, tag, responseCode, contentType, nil, false, payload, ""}
 }
@@ -423,6 +429,11 @@ func (a *Assertable) Error() string {
 	return a.msg
 }
 
+// Assert tests the `assertion` parameter, and trips if it test fails. A "trip" comprises three
+// things: the provided message is logged; the client is sent the canned response (via the
+// `http.ResponseWriter` provided at creation); and, the current execution stack is interrupted via
+// a `panic` with the `Assertable` as the error. This panic is intended to be intercepted by the
+// `WithPanicHandler()` wrapper from this package, making Wrapper/Assertable a pair.
 func (a *Assertable) Assert(assertion bool, params ...interface{}) {
 	if assertion {
 		return
