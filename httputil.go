@@ -499,6 +499,22 @@ func (w *wrapper) WithSessionSentry(body interface{}) *wrapper {
 	})
 }
 
+func (w *wrapper) WithAuthCallback(onFail interface{}, cb func(email string) bool) *wrapper {
+	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
+		return func(writer http.ResponseWriter, req *http.Request) {
+			ssn := session.GetSession(req)
+			if !ssn.IsLoggedIn() || !cb(ssn.Email) {
+				if onFail != nil {
+					SendJSON(writer, http.StatusForbidden, onFail)
+				} else {
+					SendPlaintext(writer, http.StatusForbidden, "Unauthenticated")
+				}
+			}
+			f(writer, req)
+		}
+	})
+}
+
 func (w *wrapper) withLogger(always bool) *wrapper {
 	return w.prep(func(f http.HandlerFunc) http.HandlerFunc {
 		return func(writer http.ResponseWriter, req *http.Request) {

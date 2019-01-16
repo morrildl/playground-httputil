@@ -37,11 +37,12 @@ func OAuthHandler(writer http.ResponseWriter, req *http.Request) {
 // Content is a utility for managing access, caching, and serving of static content from
 // disk. It is intended for use with the http package.
 type Content struct {
-	Path         string
-	Prefix       string
-	faviconBytes []byte
-	indexBytes   []byte
-	preloads     map[string][]byte
+	Path              string
+	Prefix            string
+	DisablePreloading bool
+	faviconBytes      []byte
+	indexBytes        []byte
+	preloads          map[string][]byte
 }
 
 // Handler is an http.HandleFunc that searches for and serves a file from disk (or cache, if it was
@@ -130,6 +131,10 @@ func (self *Content) FaviconHandler(writer http.ResponseWriter, req *http.Reques
 // index.html, favicon.ico, and so on. Do NOT use this for files that can change during the lifetime
 // of the server.
 func (self *Content) Preload(files ...string) {
+	if self.DisablePreloading {
+		return
+	}
+
 	for _, filename := range files {
 		fileBytes, err := self.loadFile(filename)
 		if err == nil {
@@ -147,7 +152,7 @@ func (self *Content) loadFile(filename string) ([]byte, error) {
 	}
 
 	fileBytes, ok := self.preloads[filename]
-	if ok {
+	if ok && !self.DisablePreloading {
 		return fileBytes, nil
 	}
 
