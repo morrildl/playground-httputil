@@ -493,6 +493,7 @@ func (w *wrapper) WithSessionSentry(body interface{}) *wrapper {
 				} else {
 					SendPlaintext(writer, http.StatusForbidden, "Unauthenticated")
 				}
+				return
 			}
 			f(writer, req)
 		}
@@ -509,6 +510,7 @@ func (w *wrapper) WithAuthCallback(onFail interface{}, cb func(email string) boo
 				} else {
 					SendPlaintext(writer, http.StatusForbidden, "Unauthenticated")
 				}
+				return
 			}
 			f(writer, req)
 		}
