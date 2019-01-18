@@ -449,8 +449,8 @@ func (w *wrapper) WithPanicHandler() *wrapper {
 		return func(writer http.ResponseWriter, req *http.Request) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Warn("Wrapper.PanicHandler", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
 					if _, ok := r.(*Assertable); !ok { // an Assertable will have already committed the response
+						log.Warn("Wrapper.PanicHandler", fmt.Sprintf("panic in handler for %s %s", req.Method, req.URL.Path), r)
 						SendJSON(writer, http.StatusInternalServerError, struct{}{})
 					}
 				}
