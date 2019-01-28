@@ -239,6 +239,29 @@ func (s *HardenedServer) ListenAndServeTLSRedirector(httpsHost string, httpPort 
 	}()
 }
 
+// ListenAndServeSNI is like ListenAndServeTLS but accepts multiple server
+// certificates, selecting the appropriate one per-request via SNI. Nothing
+// fancy here; this just uses Go's built-in SNI support.
+func (s *HardenedServer) ListenAndServeSNI(keymatter [][]string) error {
+	if len(keymatter) < 1 {
+		panic("missing at least one server certificate")
+	}
+	var err error
+	s.TLSConfig.Certificates = make([]tls.Certificate, len(keymatter))
+	for i, pair := range keymatter {
+		if s.TLSConfig.Certificates[i], err = tls.LoadX509KeyPair(pair[0], pair[1]); err != nil {
+			return err
+		}
+	}
+	s.TLSConfig.BuildNameToCertificate()
+
+	if l, err := tls.Listen("tcp", s.Addr, s.TLSConfig); err != nil {
+		return err
+	} else {
+		return s.Serve(l)
+	}
+}
+
 // RequireClientRoot instructs the HardenedServer to only accept connections from clients which
 // present a client certificate signed by a CA during TLS handshake. If the provided rootCertFile is
 // a specific (self-signed) certificate instead of a CA certificate, the behavior is basically
